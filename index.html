@@ -53,6 +53,24 @@ state.viewMonth=/^\d{4}-\d{2}$/.test(state.viewMonth||'')?state.viewMonth:nowDat
 state.used=Array.isArray(state.used)?state.used.filter(x=>Number.isInteger(x)&&x>=0&&x<PRAISE.length):[];
 state.onlineQuotes=Array.isArray(state.onlineQuotes)?state.onlineQuotes:[];
 state.stopwatch=state.stopwatch||defaultState().stopwatch;
+// Fresh launches open today's plan; an active overnight session stays visible until paused.
+const bootToday=nowDate();
+let observedDate=bootToday;
+let pendingDateSwitch=false;
+if(state.date!==bootToday){
+ const t=state.stopwatch;
+ const activeSession=!!(t.running&&t.date===state.date&&t.plan===state.plan);
+ if(activeSession){
+  pendingDateSwitch=true;
+ }else{
+  if(t.date===state.date&&!t.running&&Number(t.accum)>0){
+   const past=record(t.date,t.plan);
+   past.elapsedSec=Math.max(Number(past.elapsedSec)||0,Math.floor(Number(t.accum)));
+  }
+  state.date=bootToday;
+ }
+}
+state.viewMonth=state.date.slice(0,7);
 function save(){try{localStorage.setItem(KEY,JSON.stringify(state));savedOK=true}catch(e){savedOK=false}$('saved-text').textContent=savedOK?'✓ 自动保存':'⚠ 当前浏览器未允许保存，请导出备份'}
 // Each training day has its own saved balanced set. Legacy logged days keep their original actions.
 function randomLine(plan){return TRAINING_GROUPS[plan].map(group=>group[Math.floor(Math.random()*group.length)])}
@@ -107,7 +125,22 @@ function toggleCheck(id){if(isFuture())return;const opens=currentOpens(),r=recor
 function completeAll(){if(isFuture())return;const r=record(),was=!!r.completedAt;r.checks=info().map(t=>t.id);if(!was){r.completedAt=new Date().toISOString();r.elapsedSec=timerElapsed();stopTimer();r.elapsedSec=timerElapsed();save();showCelebrate()}save();renderTasks();renderCalendar()}
 function resetSelected(){if(isFuture())return;if(!confirm('确定要清除 '+state.date+' 的「'+(state.plan==='strength'?'强化':'恢复')+'」打卡吗？'))return;const r=record();r.checks=[];r.completedAt=null;r.elapsedSec=0;save();renderTasks();renderCalendar();toast('本套训练已重置')}
 function switchPlan(plan){if(plan===state.plan)return;state.plan=plan;save();renderTasks();renderCalendar();renderTimer()}
-function selectDate(date){if(!validDate(date))return;state.date=date;state.viewMonth=date.slice(0,7);save();renderTasks();renderCalendar();renderTimer();if(date>nowDate())toast('未来日期只能查看，不能提前打卡');}
+function selectDate(date){if(!validDate(date))return;pendingDateSwitch=false;state.date=date;state.viewMonth=date.slice(0,7);save();renderTasks();renderCalendar();renderTimer();if(date>nowDate())toast('未来日期只能查看，不能提前打卡');}
+// Keep accumulated time in the historical date when changing to a new day.
+function stashCurrentSessionTime(){
+ const t=state.stopwatch;
+ if(t&&t.date===state.date&&t.plan===state.plan&&!t.running){
+  const r=record(t.date,t.plan);
+  r.elapsedSec=Math.max(Number(r.elapsedSec)||0,timerElapsed());
+  save();
+ }
+}
+function switchToTodayAfterPause(){
+ if(!pendingDateSwitch||state.stopwatch.running||$('overlay').classList.contains('show'))return;
+ stashCurrentSessionTime();
+ selectDate(nowDate());
+ toast('已进入今天的新训练');
+}
 function renderCalendar(){const begin=startMonth(state.viewMonth);$('month-label').textContent=begin.getFullYear()+' 年 '+(begin.getMonth()+1)+' 月';const shift=(begin.getDay()+6)%7;const today=nowDate();let body=['一','二','三','四','五','六','日'].map(d=>`<div class="dow">${d}</div>`).join('');for(let i=0;i<42;i++){const d=new Date(begin.getFullYear(),begin.getMonth(),1-shift+i),date=localDate(d),r=state.records[date]||{},str=!!r.strength?.completedAt,rec=!!r.recovery?.completedAt;const other=d.getMonth()!==begin.getMonth();body+=`<button type="button" class="day ${other?'other':''} ${date===today?'today':''} ${date===state.date?'selected':''} ${date>today?'future':''}" data-date="${date}" aria-label="${date}${str?' 强化完成':''}${rec?' 恢复完成':''}" aria-pressed="${date===state.date}"><span>${d.getDate()}</span><span class="pins">${str?'<i class="pin"></i>':''}${rec?'<i class="pin rec"></i>':''}</span></button>`} $('calendar').innerHTML=body;const r=state.records[state.date]||{};const strengthCount=r.strength?.checks?.length||0,recoveryCount=r.recovery?.checks?.length||0;const strTime=r.strength?.elapsedSec?' · '+fmtSec(r.strength.elapsedSec):'';const recTime=r.recovery?.elapsedSec?' · '+fmtSec(r.recovery.elapsedSec):'';$('day-summary').innerHTML=`<strong>${esc(state.date)}</strong>　强化 ${strengthCount}/${info(state.date,'strength').length}${esc(strTime)}　·　恢复 ${recoveryCount}/${info(state.date,'recovery').length}${esc(recTime)}`;
  let finished=0,days=0,thisMonth=0;Object.entries(state.records).forEach(([date,obj])=>{let n=0;if(obj?.strength?.completedAt)n++;if(obj?.recovery?.completedAt)n++;if(n)days++;finished+=n;if(date.startsWith(state.viewMonth))thisMonth+=n});$('stat-total').textContent=finished;$('stat-days').textContent=days;$('stat-month').textContent=thisMonth}
 function effectiveWatch(){const t=state.stopwatch;if(t.date!==state.date||t.plan!==state.plan)return {date:state.date,plan:state.plan,accum:0,start:null,running:false};return t}
@@ -115,13 +148,36 @@ function ensureWatch(){if(state.stopwatch.date!==state.date||state.stopwatch.pla
 function timerElapsed(){const t=effectiveWatch();return Math.max(0,Math.floor((Number(t.accum)||0)+(t.running&&t.start?Math.max(0,Date.now()-t.start)/1000:0)))}
 function renderTimer(){$('timer').textContent=fmtSec(timerElapsed());const t=effectiveWatch(),r=record();$('timer-start').textContent=t.running?'暂停计时':t.accum?'继续计时':'开始计时';$('timer-start').disabled=isFuture();$('timer-clear').disabled=isFuture();$('timer-label').textContent=r.completedAt?'本次已完成 · 记录 '+fmtSec(r.elapsedSec||0):'训练时长只是记录，不是考核'}
 function stopTimer(){const t=ensureWatch();if(t.running){t.accum=timerElapsed();t.running=false;t.start=null;save()}}
-function toggleTimer(){if(isFuture())return;const t=ensureWatch();if(t.running){t.accum=timerElapsed();t.start=null;t.running=false}else{t.running=true;t.start=Date.now()}save();renderTimer()}
+function toggleTimer(){if(isFuture())return;const t=ensureWatch();if(t.running){t.accum=timerElapsed();t.start=null;t.running=false}else{t.running=true;t.start=Date.now()}save();renderTimer();if(pendingDateSwitch&&!t.running)switchToTodayAfterPause()}
 function clearTimer(){if(isFuture())return;const t=ensureWatch();if(t.running||t.accum){if(!confirm('清零这一套训练的计时？已经完成的打卡不会清除。'))return}t.running=false;t.start=null;t.accum=0;save();renderTimer()}
-function clockTick(){const date=new Date();$('clock').textContent=date.toLocaleTimeString('zh-CN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});$('today-label').textContent=date.toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});const online=navigator.onLine;$('net-status').innerHTML='<span class="dot" style="background:'+(online?'#6aaf89':'#d6a16d')+'"></span>'+(online?'已连接网络 · 离线可用':'当前离线 · 打卡照常');if(nowDate()!==clockTick.lastDate){clockTick.lastDate=nowDate();renderCalendar();}renderTimer()}
+function clockTick(){
+ const date=new Date(),today=localDate(date);
+ $('clock').textContent=date.toLocaleTimeString('zh-CN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+ $('today-label').textContent=date.toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+ const online=navigator.onLine;
+ $('net-status').innerHTML='<span class="dot" style="background:'+(online?'#6aaf89':'#d6a16d')+'"></span>'+(online?'已连接网络 · 离线可用':'当前离线 · 打卡照常');
+ if(today!==observedDate){
+  const previousDate=observedDate;
+  observedDate=today;
+  if(state.date===previousDate){
+   const t=state.stopwatch;
+   if(t.running&&t.date===previousDate&&t.plan===state.plan){
+    pendingDateSwitch=true;
+    toast('已经进入新的一天，暂停当前计时后将切换新计划');
+   }else{
+    stashCurrentSessionTime();
+    selectDate(today);
+    toast('新的一天，已生成今天的训练计划');
+   }
+  }
+  renderCalendar();
+ }
+ renderTimer();
+}
 function nextPraise(){if(state.used.length>=PRAISE.length)state.used=[];const used=new Set(state.used);let index=Math.floor(Math.random()*PRAISE.length);while(used.has(index))index=(index+1)%PRAISE.length;state.used.push(index);state.lastPraise=index;save();$('quote-text').textContent=PRAISE[index];return PRAISE[index]}
 function confetti(){for(let i=0;i<38;i++){const d=document.createElement('div');d.className='confetti';d.style.setProperty('--left',Math.round(Math.random()*100)+'vw');d.style.setProperty('--fall',(2.1+Math.random()*2.4).toFixed(2)+'s');d.style.setProperty('--rot',Math.floor(Math.random()*360)+'deg');d.style.setProperty('--color',['#d19fe3','#94cda8','#efc98f','#b0c2f4'][i%4]);document.body.appendChild(d);setTimeout(()=>d.remove(),4700)}}
 function showCelebrate(){const s=nextPraise();$('celeb-quote').textContent=s;$('celeb-meta').textContent=state.date+' · '+(state.plan==='strength'?'攀岩预备强化':'练后恢复')+' · 全部动作完成';const last=state.onlineQuotes[state.onlineQuotes.length-1];$('celeb-online').style.display=last?'block':'none';$('celeb-online').textContent=last?'联网夸夸：'+last:'';$('overlay').classList.add('show');confetti();$('celeb-close').focus()}
-function closeCelebrate(){$('overlay').classList.remove('show')}
+function closeCelebrate(){$('overlay').classList.remove('show');switchToTodayAfterPause()}
 function showOnlineBox(msg){const box=$('online-box');box.style.display=msg?'block':'none';box.textContent=msg}
 async function fetchOnline(manual=false){
  if(!navigator.onLine){if(manual){showOnlineBox('当前离线，仍可正常打卡与查看本地夸夸。');toast('当前离线，打卡不受影响')}return}
@@ -148,7 +204,7 @@ $('prev-month').onclick=()=>{const d=startMonth(state.viewMonth);d.setMonth(d.ge
 $('next-month').onclick=()=>{const d=startMonth(state.viewMonth);d.setMonth(d.getMonth()+1);state.viewMonth=localDate(d).slice(0,7);save();renderCalendar()};
 $('jump-today').onclick=()=>selectDate(nowDate());$('celeb-next').onclick=()=>{$('celeb-quote').textContent=nextPraise();confetti()};$('celeb-close').onclick=closeCelebrate;$('overlay').onclick=e=>{if(e.target===$('overlay'))closeCelebrate()};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeCelebrate()});$('refresh-online').onclick=()=>fetchOnline(true);$('export-records').onclick=exportRecords;$('import-records').onclick=()=>$('import-file').click();$('import-file').onchange=e=>importRecords(e.target.files[0]);window.addEventListener('online',()=>fetchOnline(false));
 if(state.lastPraise!=null&&PRAISE[state.lastPraise])$('quote-text').textContent=PRAISE[state.lastPraise];else $('quote-text').textContent='完成一整套训练后，这里会出现一句专属夸夸。';
-if(state.date>nowDate())state.date=nowDate();save();renderTasks();renderCalendar();clockTick();setInterval(clockTick,1000);fetchOnline(false);
+if(state.date>nowDate())state.date=nowDate();save();renderTasks();renderCalendar();clockTick();setInterval(clockTick,1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)clockTick()});fetchOnline(false);
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){window.addEventListener('load',()=>{navigator.serviceWorker.register('./service-worker.js').catch(()=>{});});}
 })();
 </script>
