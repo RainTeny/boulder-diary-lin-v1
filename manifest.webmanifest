@@ -1,0 +1,26 @@
+{
+  "id": "./index.html",
+  "name": "V3 进阶 · 抱石训练",
+  "short_name": "抱石训练",
+  "description": "抱石 V3 进阶宿舍训练：预备强化、练后恢复、日历打卡与专属夸夸。",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#edf8e8",
+  "theme_color": "#e6f5df",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
